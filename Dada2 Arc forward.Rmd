@@ -1,0 +1,289 @@
+---
+title: "DADA2 Arc forward"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T,
+                      warning = FALSE, message = FALSE)
+```
+
+# Traitement des séquences en ASV
+## DADA2
+[Pipeline DADA2](https://benjjneb.github.io/dada2/tutorial.html)  
+[Pipeline DADA2 modifié](https://doi.org/10.12688/f1000research.8986.2) 
+```{r}
+library(dada2)
+```
+
+### Traitement des raws
+Créer un dossier sur le serveur dans lequel vont étre réalisé les annalyses. Ce dossier doit lui même contenir un dossier **fasta** contenant les raw.
+
+On extrait les séquences et on séparent les séquences Forward et Reverse en se basant sur le nom des raws. R1 = Forward, R2 = Reverse.
+
+**ATTENTION** - Changer manuellement le directory pour fast tree
+```{r}
+path <- "~/Arc" #nom du dossier principal, doit contenir un dossier "fasta" contenant les raw
+
+fnFs <- sort(list.files(file.path(path,"fasta"),pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(file.path(path,"fasta"),pattern="_R2_001.fastq", full.names = TRUE))
+```
+On extrait le nom des échantillons en se basant sur le modéle:  "SAMPLENAME_XXX.fastq".
+
+**R1 = Forward**  
+**R2 = Reverse**
+
+On réalise un graphique de la qualiées des séquences Forward et Reverse. Ce graphique permet d'observer la qualitée du séquençage sur l'ensembles des séquences. Généralement les séquences Reverse sont de moins bonne qualitée sur la fin. On peut ensuite choisir de retirer les derniers nucléotides si la qualitée est mauvaise.
+
+```{r echo=TRUE}
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+
+plotQualityProfile(fnFs[1:9])
+plotQualityProfile(fnRs[1:9])
+```
+On observe que les séquences forward présentes une faible qualitée dans les premiéres reads on ajoute donc un filtre pour enlever les 10 premiéres bases.
+
+On sépare les fasta dans un dossier avant de les filtrer.
+```{r}
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+```
+
+### Filtrer et trimer
+Lors de la filtration on choisit de couper les séquences en fonction de la qualitée des Forward et Reverse!  
+**Attention les séquences doivent encore se chevaucher pour pouvoir étre fusinner ensuite il ne faut pas trop couper ou verifer lors du merge** Minimum de 20 entre les 2!
+
+Ici je choisit 280 Forward et 250 pour reverse!
+
+Outil permettant de choisir la longeur a garder sur les séquences: **[FIGARO](https://github.com/Zymo-Research/figaro#figaro), a tester**
+
+Différents paramétres:  
+- **truncLen**: longeur du brin forward à conserver, longeur du brin reverse à conserver.  
+-**maxN**: toujours 0, DADA2 n'accepte pas les N. (N=A,T,C ou G / *IUPAC_CODE_MAP* )  
+-**maxEE**: nombre maximal d'erreur accepter dans une read.  
+-**truncQ**: Coupe les reads avec un quality score =< "truncQ" (default = 2).  
+-**multithread**: Lance la comande en parraléle, plus rapide. Mais uniquement possible sur serveur.
+
+
+```{r echo=TRUE}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(300,300),
+                     maxN=0, maxEE=2 , truncQ=2, trimLeft=0,
+                     compress=TRUE, multithread=TRUE) 
+# On Windows set multithread=FALSE
+head(out)
+```
+
+### Analyse du taux d'erreur et ASV
+
+On choisit d'utiliser l'algorithme de DADA2 qui permet de ne pas imposer de seuil (97%) comme pour l'assemblage des OTU, ici on sépare les variants ayant une différence d'un seul nucléotide.
+
+Pour cela un model d'annalyse et de substitution des erreurs est appliqué pour distinguer les erreur issue de l'amplification et du séquençage des variants naturels.
+
+On observe si le taux d'erreur a été bien estimé en regardant si la ligne noir fit les points.
+
+**Essayer la méthode avec déreplication et self consist**
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+
+plotErrors(errF, nominalQ=TRUE)
+```
+
+On applique l'algorithm d'inférence pour filtrer et trimmer les séquences!
+
+```{r, message=FALSE}
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
+dadaFs[[1]]
+```
+
+```{r}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs)
+```
+
+On construit la table d'ASV. Les séquences trop longues ou trop courtes sont retirées car elles sont trés certainement issues d'appariemnet aspecifique!
+
+```{r echo=TRUE}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+
+# Inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab)))
+
+#supprimer les séquences trop longues ou trop courtes
+seqtab <- seqtab[,nchar(colnames(seqtab)) %in% 551:563]
+```
+
+On retire les séquences chimériques.
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE)
+dim(seqtab.nochim)
+sum(seqtab.nochim)/sum(seqtab)
+seqtab <- seqtab.nochim
+```
+
+### Séquences suprimée par étapes
+```{r echo=TRUE}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+
+## IDTAXA Classification
+
+On assigne la taxonomie aux **ASV** en utilisant **IDTAXA** nouvelle méthode de calssification [plus précise.](https://microbiomejournal.biomedcentral.com/articles/10.1186/s40168-018-0521-5)
+
+On utilise la base de donnée **SILVA_SSU_v138** derniére version de SILVA téléchargée sur [DECIPHER](http://www2.decipher.codes/Downloads.html) pour étre sous forme d'objet R. Puis on reclassifie avec la base de donnée **arc.cassandre.trainingset.RData**, qui contien une classification fine des groupes *Woesearchaeota* et *Bathyarchaeota*.
+
+**threshold**: Indice de confiance de classfication conseil 60% (very high) ou 50 (high), plus les séquences sont longue plus ont peut augmenter l'indice de confiance car elle sont théoriquement plus facile a classifier.  
+**processors = NULL**: scan et utilise tous les processeurs disponibles!
+
+```{r eval=FALSE}
+library(DECIPHER)
+dna <- Biostrings::DNAStringSet(getSequences(seqtab.nochim)) # Create a DNAStringSet from the ASVs
+load("~/SILVA_SSU_r138_2019.RData") # CHANGE TO THE PATH OF YOUR TRAINING SET
+ids <- IdTaxa(dna, trainingSet, strand="both", processors=NULL, verbose=FALSE, threshold = 50)
+ranks <- c("domain", "phylum", "class", "order", "family", "genus") # ranks of interest
+
+# Convert the output object of class "Taxa" to a matrix analogous to the output from assignTaxonomy
+taxid <- t(sapply(ids, function(x) {
+        m <- match(ranks, x$rank)
+        taxa <- x$taxon[m]
+        taxa[startsWith(taxa, "unclassified_")] <- NA
+        taxa
+}))
+colnames(taxid) <- ranks; rownames(taxid) <- getSequences(seqtab.nochim)
+```
+
+Garder les séquences non identifiées au phylum et réaliser une deuxiéme identification à l'aide d'autres bases de données.
+
+```{r}
+taxid <- as.data.frame(taxid)
+taxint <- subset(taxid, is.na(phylum))
+taxide <- subset(taxid, !(is.na(domain)))
+
+dim(taxint)
+
+seqtabint <-as.data.frame(seqtab.nochim)
+seqtabint <- seqtab.nochim[,colnames(seqtab.nochim) %in% rownames(taxint)]
+```
+
+Reclassifier avec *arc.cassandre*
+
+```{r}
+load("~/arc.cassandre.trainingset.RData") # CHANGE TO THE PATH OF YOUR TRAINING SET
+dna <- DNAStringSet(getSequences(seqtabint)) # Create a DNAStringSet from the ASVs
+ids <- IdTaxa(dna, trainingSet, strand="both", processors=NULL, verbose=FALSE, threshold = 50)
+
+taxint <- t(sapply(ids, function(x) {
+        m <- match(ranks, x$rank)
+        taxa <- x$taxon[m]
+        taxa[startsWith(taxa, "unclassified_")] <- NA
+        taxa
+}))
+colnames(taxint) <- ranks; rownames(taxint) <- getSequences(seqtabint)
+
+# Enlever les séquences non classifiée
+taxint <-subset(as.data.frame(taxint), domain =="Archaea")
+# Enlever les séquences dans la premiére classification qui sont présente dans la deuxiéme (mieux classifiées)
+taxide <- taxide[!(rownames(taxide) %in% rownames(taxint)),]
+# Fusionner les deux tables de taxonomie
+taxid <- rbind(taxide, as.data.frame(taxint))
+```
+
+Étendre la classification à tous les genres en ajoutant "unclassified_"
+```{r}
+taxid <- as.data.frame(t(taxid))
+taxid[] <- lapply(taxid, as.character)
+taxid2<- fill(taxid, names(taxid),.direction = "down")
+taxid2<- sapply(taxid2, function(x){paste0("unclassified_", x)})
+taxid[is.na(taxid)] <- taxid2[is.na(taxid)]
+taxid <- t(taxid)
+taxid[ taxid == "unclassified_NA" ] <- NA
+```
+
+On retire les ASV non classifié comme apartenant au domaine d'intéret dans le fichier tax. Puis dans la matrice d'ASV!
+
+```{r eval=FALSE}
+taxid <-subset(as.data.frame(taxid), domain =="Archaea")
+seqtab <- seqtab[,colnames(seqtab) %in% rownames(taxid)]
+```
+
+Un témoin négatif est ajouté lors du séquençage afin d'observer la présence de contaminant du aux manipulations. Cependant retirer des autres écahntillons toutes les séquences présentes dans le temoin négatif n'est pas forcément idéal car les contamination croisée entre échantillons peuvent étre la premiére cause de contamination!
+
+On observe la distribution des séquences présentent dans le temoin négatif avant de le supprimer!
+
+```{r eval=FALSE}
+neg <- subset(as.data.frame(t(seqtab)), `Lazar-CTRL-neg-PCR-bac` != 0)
+# VÉRIFIER LA DISTRIBUTION DES SÉQUENCES
+seqtab <- seqtab[-c(1),-which(colnames(seqtab) %in% rownames(neg))] #supprimer les séquences du neg
+
+# enregistrer le fichier tax
+write.csv(as.data.frame(taxid), file = file.path(path,"ASV.tax.csv"))
+
+#enregistrer la matrice d'ASV transposée pour éviter bug de chargement (trop de colones)
+write.csv(as.data.frame(t(seqtab)),file = file.path(path,"ASV.matrice.t.csv"))
+```
+
+## Decipher allignement
+
+Allignement des séquences
+```{r eval=FALSE, message=FALSE, warning=FALSE}
+library(DECIPHER)
+
+seqs <- getSequences(seqtab)
+names(seqs) <- seqs # This propagates to the tip labels of the tree
+alignment <- AlignSeqs(DNAStringSet(seqs), anchor=NA, processors= NULL)
+
+#Enregistrer les séquences allignées en format FASTA
+writeXStringSet(alignment, file = file.path(path,"ASV.align.fasta"),format="fasta")
+```
+
+
+## Fast Tree
+
+Le Fasta aligné peut ensuite étre utilisé dans FAST TREE! Pour cela le `chunk` ci dessous doit étre un `bash`, ce script doit étre exécuté sur un serveur disposant de Fast tree.
+
+```{bash eval=FALSE}
+fasttree -nt -gtr < ~/ArcForward/ASV.align.fasta > ~/Arc/tree
+```
+
+L'arbre créée n'est pas "rooted". Donner des racines a un arbre signifie mentionner les ancétres commun et determiner leurs position. Les branches d'un arbres possédant des racines montre le moment exact de la séparation des espéces. La plupart des arbres n'estime pas la position des racines car cela demande un temps de calcul beaucoup plus important!
+
+2 méthodes pour donner des racines a un arbre:  
+**-Outgroup rooting**: Ajouter dans l'arbre des séquences connues. Le point auquel ces séquences rejoignes les autres devient la racine connue.  
+**-Midpoint rooting**: On suppose que toutes les séquences évolues a la même vitesse.  
+
+[Qu'est ce qu'un arbre phylogénetique](https://www.ebi.ac.uk/training/online/course/introduction-phylogenetics/what-phylogeny/aspects-phylogenies/nodes)
+
+On peut ajouter un "midpoint rooting".
+```{r eval=FALSE}
+library(phangorn)
+Tree <- ape::read.tree(file.path(path,"tree"))
+Tree.midpoint <- phangorn::midpoint(Tree)
+ape::write.tree(Tree.midpoint,file = file.path(path,"tree.midpoint"))
+```
+
+## Attribuer un nom court aux ASV
+
+On attribut un nom court aux ASV (ex: ASV18) à la place de la séquence compléte pour faciliter les prochaines analyses.
+```{r eval=FALSE}
+library(phyloseq)
+ps <- phyloseq(otu_table(t(seqtab), taxa_are_rows=TRUE), tax_table(as.matrix(taxid)))
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+
+# enregistrer le fichier tax modifié (Short Name)
+write.csv(as.data.frame(as(tax_table(ps), "matrix")), file = file.path(path,"ASV.tax.SN.csv"))
+
+# enregistrer la matrice d'ASV transposé modifié (Short Name)
+write.csv(as.data.frame(as(otu_table(ps), "matrix")),file = file.path(path,"ASV.matrice.SN.csv"))
+```
+
+## Raréfaction
+**Supprimer les ASV non classifiés comme bactéries**
+**DADA2 ne permet pas de faire de raréfaction, utiliser `phyloseq::rarefy_even_depth`**
