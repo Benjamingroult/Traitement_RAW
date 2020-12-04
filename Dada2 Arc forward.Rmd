@@ -8,6 +8,7 @@ knitr::opts_chunk$set(echo = T,
 ```
 
 # Traitement des séquences en ASV
+
 ## DADA2
 [Pipeline DADA2](https://benjjneb.github.io/dada2/tutorial.html)  
 [Pipeline DADA2 modifié](https://doi.org/10.12688/f1000research.8986.2) 
@@ -16,7 +17,9 @@ library(dada2)
 ```
 
 ### Traitement des raws
-Créer un dossier sur le serveur dans lequel vont étre réalisé les annalyses. Ce dossier doit lui même contenir un dossier **fasta** contenant les raw.
+** Les étapes de fusion des brins `mergePairs` et de retrait des brins ayant une longeur abérante sont retirée. Ce script ne prend en compte que les 200 premiéres pb du brin Forward.** 
+
+Créer un dossier sur le serveur dans lequel vont étre réalisée les annalyses. Ce dossier doit lui même contenir un dossier **fasta** contenant les raw.
 
 On extrait les séquences et on séparent les séquences Forward et Reverse en se basant sur le nom des raws. R1 = Forward, R2 = Reverse.
 
@@ -25,29 +28,25 @@ On extrait les séquences et on séparent les séquences Forward et Reverse en s
 path <- "~/Arc" #nom du dossier principal, doit contenir un dossier "fasta" contenant les raw
 
 fnFs <- sort(list.files(file.path(path,"fasta"),pattern="_R1_001.fastq", full.names = TRUE))
-fnRs <- sort(list.files(file.path(path,"fasta"),pattern="_R2_001.fastq", full.names = TRUE))
 ```
 On extrait le nom des échantillons en se basant sur le modéle:  "SAMPLENAME_XXX.fastq".
 
 **R1 = Forward**  
 **R2 = Reverse**
 
-On réalise un graphique de la qualiées des séquences Forward et Reverse. Ce graphique permet d'observer la qualitée du séquençage sur l'ensembles des séquences. Généralement les séquences Reverse sont de moins bonne qualitée sur la fin. On peut ensuite choisir de retirer les derniers nucléotides si la qualitée est mauvaise.
+On réalise un graphique de la qualitées des séquences Forward . Ce graphique permet d'observer la qualitée du séquençage sur l'ensembles des séquences. Généralement les séquences Reverse sont de moins bonne qualitée sur la fin, c'est pourquoi ici on ne garde que les Forward. On peut ensuite choisir de retirer les derniers nucléotides si la qualitée est mauvaise.
 
 ```{r echo=TRUE}
 sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
 
 plotQualityProfile(fnFs[1:9])
-plotQualityProfile(fnRs[1:9])
 ```
 On observe que les séquences forward présentes une faible qualitée dans les premiéres reads on ajoute donc un filtre pour enlever les 10 premiéres bases.
 
 On sépare les fasta dans un dossier avant de les filtrer.
 ```{r}
 filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
-filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
 names(filtFs) <- sample.names
-names(filtRs) <- sample.names
 ```
 
 ### Filtrer et trimer
@@ -67,7 +66,7 @@ Différents paramétres:
 
 
 ```{r echo=TRUE}
-out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(300,300),
+out <- filterAndTrim(fnFs, filtFs, truncLen=c(200),
                      maxN=0, maxEE=2 , truncQ=2, trimLeft=0,
                      compress=TRUE, multithread=TRUE) 
 # On Windows set multithread=FALSE
@@ -82,10 +81,8 @@ Pour cela un model d'annalyse et de substitution des erreurs est appliqué pour 
 
 On observe si le taux d'erreur a été bien estimé en regardant si la ligne noir fit les points.
 
-**Essayer la méthode avec déreplication et self consist**
 ```{r echo=TRUE, message=FALSE, warning=FALSE}
 errF <- learnErrors(filtFs, multithread=TRUE)
-errR <- learnErrors(filtRs, multithread=TRUE)
 
 plotErrors(errF, nominalQ=TRUE)
 ```
@@ -94,25 +91,10 @@ On applique l'algorithm d'inférence pour filtrer et trimmer les séquences!
 
 ```{r, message=FALSE}
 dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
-dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
-dadaFs[[1]]
-```
 
-```{r}
-mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs)
-```
-
-On construit la table d'ASV. Les séquences trop longues ou trop courtes sont retirées car elles sont trés certainement issues d'appariemnet aspecifique!
-
-```{r echo=TRUE}
-seqtab <- makeSequenceTable(mergers)
+seqtab <- makeSequenceTable(dadaFs)
 dim(seqtab)
 
-# Inspect distribution of sequence lengths
-table(nchar(getSequences(seqtab)))
-
-#supprimer les séquences trop longues ou trop courtes
-seqtab <- seqtab[,nchar(colnames(seqtab)) %in% 551:563]
 ```
 
 On retire les séquences chimériques.
@@ -127,9 +109,9 @@ seqtab <- seqtab.nochim
 ### Séquences suprimée par étapes
 ```{r echo=TRUE}
 getN <- function(x) sum(getUniques(x))
-track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+track <- cbind(out, sapply(dadaFs, getN), rowSums(seqtab.nochim))
 # If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
-colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+colnames(track) <- c("input", "filtered", "denoisedF", "nonchim")
 rownames(track) <- sample.names
 head(track)
 ```
