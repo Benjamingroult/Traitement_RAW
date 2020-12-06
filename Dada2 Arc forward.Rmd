@@ -25,7 +25,7 @@ On extrait les séquences et on séparent les séquences Forward et Reverse en s
 
 **ATTENTION** - Changer manuellement le directory pour fast tree
 ```{r}
-path <- "~/Arc" #nom du dossier principal, doit contenir un dossier "fasta" contenant les raw
+path <- "~/ArcForward" #nom du dossier principal, doit contenir un dossier "fasta" contenant les raw
 
 fnFs <- sort(list.files(file.path(path,"fasta"),pattern="_R1_001.fastq", full.names = TRUE))
 ```
@@ -66,8 +66,8 @@ Différents paramétres:
 
 
 ```{r echo=TRUE}
-out <- filterAndTrim(fnFs, filtFs, truncLen=c(200),
-                     maxN=0, maxEE=2 , truncQ=2, trimLeft=0,
+out <- filterAndTrim(fnFs, filtFs, truncLen=c(210),
+                     maxN=0, maxEE=2 , truncQ=2, trimLeft=10,
                      compress=TRUE, multithread=TRUE) 
 # On Windows set multithread=FALSE
 head(out)
@@ -94,7 +94,6 @@ dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
 
 seqtab <- makeSequenceTable(dadaFs)
 dim(seqtab)
-
 ```
 
 On retire les séquences chimériques.
@@ -182,7 +181,7 @@ taxid <- rbind(taxide, as.data.frame(taxint))
 ```{r}
 taxid <- as.data.frame(t(taxid))
 taxid[] <- lapply(taxid, as.character)
-taxid2<- fill(taxid, names(taxid),.direction = "down")
+taxid2<- tidyr::fill(taxid, names(taxid),.direction = "down")
 taxid2<- sapply(taxid2, function(x){paste0("unclassified_", x)})
 taxid[is.na(taxid)] <- taxid2[is.na(taxid)]
 taxid <- t(taxid)
@@ -232,7 +231,7 @@ writeXStringSet(alignment, file = file.path(path,"ASV.align.fasta"),format="fast
 Le Fasta aligné peut ensuite étre utilisé dans FAST TREE! Pour cela le `chunk` ci dessous doit étre un `bash`, ce script doit étre exécuté sur un serveur disposant de Fast tree.
 
 ```{bash eval=FALSE}
-fasttree -nt -gtr < ~/ArcForward/ASV.align.fasta > ~/Arc/tree
+fasttree -nt -gtr < ~/ArcForward/ASV.align.fasta > ~/ArcForward/tree
 ```
 
 L'arbre créée n'est pas "rooted". Donner des racines a un arbre signifie mentionner les ancétres commun et determiner leurs position. Les branches d'un arbres possédant des racines montre le moment exact de la séparation des espéces. La plupart des arbres n'estime pas la position des racines car cela demande un temps de calcul beaucoup plus important!
