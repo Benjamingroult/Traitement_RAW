@@ -83,8 +83,8 @@ On observe si le taux d'erreur a été bien estimé en regardant si la ligne noi
 
 **Essayer la méthode avec déreplication et self consist**
 ```{r echo=TRUE, message=FALSE, warning=FALSE}
-errF <- learnErrors(filtFs, multithread=TRUE)
-errR <- learnErrors(filtRs, multithread=TRUE)
+errF <- learnErrors(filtFs, multithread=TRUE, randomize=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE, randomize=TRUE)
 
 plotErrors(errF, nominalQ=TRUE)
 ```
