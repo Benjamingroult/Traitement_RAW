@@ -82,7 +82,7 @@ Pour cela un model d'annalyse et de substitution des erreurs est appliqué pour 
 On observe si le taux d'erreur a été bien estimé en regardant si la ligne noir fit les points.
 
 ```{r echo=TRUE, message=FALSE, warning=FALSE}
-errF <- learnErrors(filtFs, multithread=TRUE)
+errF <- learnErrors(filtFs, multithread=TRUE, randomize=TRUE)
 
 plotErrors(errF, nominalQ=TRUE)
 ```
